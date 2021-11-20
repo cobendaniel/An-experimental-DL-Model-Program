@@ -1,0 +1,1016 @@
+import pandas as pd 
+import numpy as np 
+import time 
+import os 
+from os import listdir 
+
+from sklearn.model_selection import train_test_split 
+import tensorflow as tf 
+from tensorflow.keras.optimizers import SGD, Adam, Adadelta, Adagrad, Adamax, Nadam, Ftrl
+import keras
+
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.metrics import classification_report, r2_score, accuracy_score 
+scaler = MinMaxScaler()
+
+from proc_freq import *
+
+df_list = [pd.read_csv(i).fillna(0) for i in listdir(os.getcwd()) if ".csv" in i and "loan_data" in i]
+
+X_train = df_list[0][[i for i in df_list[0].columns if "Unnamed" not in i]].iloc[0 : 100000, :]
+y_train = df_list[1][[i for i in df_list[1].columns if "Unnamed" not in i]].iloc[0 : 100000, :]
+X_test = df_list[2][[i for i in df_list[2].columns if "Unnamed" not in i]]
+y_test = df_list[3][[i for i in df_list[3].columns if "Unnamed" not in i]]
+
+X_train = X_train[[i for i in X_test.columns]]
+
+X_train.loc[X_train["sub_grade"] == "A5", "other_target"] = 1
+X_test.loc[X_train["sub_grade"] == "A5", "other_target"] = 1
+
+X_train.loc[X_train["sub_grade"] != "A5", "other_target"] = 0
+X_test.loc[X_train["sub_grade"] != "A5", "other_target"] = 0
+
+y_train["loan_target"] = list(X_train["loan_target"])
+y_test["loan_target"] = list(X_test["loan_target"])
+y_train["other_target"] = list(X_train["other_target"])
+y_test["other_target"] = list(X_test["other_target"])
+X_train = X_train.select_dtypes(exclude = ["object"])
+X_test = X_test.select_dtypes(exclude = ["object"])
+
+target_dict = dict(zip(sorted(y_train["loan_target"].unique(), reverse = True), list(range(1, 11))))
+
+for i in target_dict:
+    y_train['loan_target'] = y_train['loan_target'].replace(i, target_dict[i])
+    y_test['loan_target'] = y_test['loan_target'].replace(i, target_dict[i])
+    
+def single_model_creator(y_train, target, input_shape, layer_num, neuron_num, activation_function):
+    activation_function = activation_function.lower()
+
+    input_layer_A = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target}")
+    if len(y_train[target].unique()) == 2:
+        final_function_A = "sigmoid"
+        final_num = 1
+    elif len(y_train[target].unique()) > 2:
+        final_function_A = "softmax"
+        final_num = len(y_train[target].unique())
+    print(f"Target variable defined as {target}, number of unique classes: {len(y_train[target].unique())}")
+    print(f"Output layer activation function for {target} defined as {final_function_A}")
+    print("")
+
+    num_list = sorted(list(range(neuron_num, (neuron_num + 8 * layer_num), 8)), reverse = True)
+    
+    layer_list_A = []
+
+    if activation_function == "selu" and type(target) == str:
+        for (a, b) in enumerate(num_list):
+            if b == num_list[0]:    
+                layer_list_A.append(keras.layers.Dense(b, name = f"{target}_{a + 1}", kernel_initializer = "lecun_normal", activation = activation_function)(input_layer_A))
+                layer_list_A.append(keras.layers.AlphaDropout(rate = 0.1)(layer_list_A[-1]))
+
+            elif b != num_list[0] and b != num_list[-1]:
+                layer_list_A.append(keras.layers.Dense(b, name = f"{target}_{a + 1}", kernel_initializer = "lecun_normal", activation = activation_function)(layer_list_A[-1]))
+                layer_list_A.append(keras.layers.AlphaDropout(rate = 0.1)(layer_list_A[-1]))
+
+            elif b == num_list[-1]:
+                layer_list_A.append(keras.layers.Dense(final_num, name = f"{target}_{a + 1}", activation = final_function_A)(layer_list_A[-1]))
+
+        model_1 = keras.Model(inputs = input_layer_A, outputs = layer_list_A[-1])
+        return model_1
+    
+    elif activation_function != "selu" and type(target) == str:
+        for (a, b) in enumerate(num_list):
+            if b == num_list[0]:
+                layer_list_A.append(keras.layers.Dense(b, name = f"{target}_{a + 1}", activation = activation_function)(input_layer_A))
+                layer_list_A.append(keras.layers.BatchNormalization()(layer_list_A[-1]))
+                layer_list_A.append(keras.layers.Dropout(rate = 0.1)(layer_list_A[-1]))
+
+            elif b != num_list[0] and b!= num_list[-1]:
+                layer_list_A.append(keras.layers.Dense(b, name = f"{target}_{a + 1}", activation = activation_function)(layer_list_A[-1]))
+                layer_list_A.append(keras.layers.BatchNormalization()(layer_list_A[-1]))
+                layer_list_A.append(keras.layers.Dropout(rate = 0.1)(layer_list_A[-1]))
+
+            elif b == num_list[-1]:
+                layer_list_A.append(keras.layers.Dense(final_num, name = f"{target}_{a + 1}", activation = final_function_A)(layer_list_A[-1]))
+
+        model_1 = keras.Model(inputs = input_layer_A, outputs = layer_list_A[-1])
+        return model_1
+        
+def multi_model_creator(y_train, target, input_shape, layer_num, neuron_num, function_type):
+    num_list = sorted(list(range(neuron_num, neuron_num + (8 * layer_num), 8)), reverse = True)
+
+    if len(target) == 2:
+        input_layer_1 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[0]}")
+        input_layer_2 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[1]}")
+        
+        if y_train[target[0]].nunique() == 2:
+            final_function_1 = "sigmoid"
+            final_num_1 = 1
+        elif y_train[target[0]].nunique() > 2:
+            final_function_1 = "softmax"
+            final_num_1 = y_train[target[0]].nunique()
+
+        if y_train[target[1]].nunique() == 2:
+            final_function_2 = "sigmoid"
+            final_num_2 = 1
+        elif y_train[target[1]].nunique() > 2:
+            final_function_2 = "softmax"
+            final_num_2 = y_train[target[1]].nunique()
+        
+        target_1_layer_list = []
+        target_2_layer_list = []
+
+        if function_type == "selu":
+            for (a, b) in enumerate(num_list):
+                if b == num_list[0]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_1))
+                    target_1_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_2))
+                    target_2_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_2_layer_list[-1]))
+
+                elif b != num_list[0] and b != num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_2_layer_list[-1]))      
+
+                elif b == num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(final_num_1, name = f"{target[0]}_{a + 1}", activation = final_function_1)(target_1_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dense(final_num_2, name = f"{target[1]}_{a + 1}", activation = final_function_2)(target_2_layer_list[-1]))
+
+            model_1 = keras.Model(inputs = [input_layer_1, input_layer_2], outputs = [target_1_layer_list[-1], target_2_layer_list[-1]])
+            
+            print(f"{function_type} model for {target[0]}, {target[1]} created")
+            return model_1
+        
+        elif function_type != "selu":
+            for (a, b) in enumerate(num_list): 
+                if b == num_list[0]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", activation = function_type)(input_layer_1))
+                    target_1_layer_list.append(keras.layers.BatchNormalization()(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", activation = function_type)(input_layer_2))
+                    target_2_layer_list.append(keras.layers.BatchNormalization()(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_2_layer_list[-1]))
+
+                elif b != num_list[0] and b != num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", activation = function_type)(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.BatchNormalization()(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", activation = function_type)(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.BatchNormalization()(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_2_layer_list[-1]))
+                
+                elif b == num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(final_num_1, name = f"{target[0]}_{a + 1}", activation = final_function_1)(target_1_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dense(final_num_2, name = f"{target[1]}_{a + 1}", activation = final_function_2)(target_2_layer_list[-1]))
+
+            model_1 = keras.Model(inputs = [input_layer_1, input_layer_2], outputs = [target_1_layer_list[-1], target_2_layer_list[-1]])
+            
+            print(f"{function_type} model for {target[0]}, {target[1]} created")
+            return model_1
+
+    elif len(target) == 3:
+        input_layer_1 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[0]}")
+        input_layer_2 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[1]}")
+        input_layer_3 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[2]}")
+
+        if y_train[target[0]].nunique() == 2:
+            final_function_1 = "sigmoid"
+            final_num_1 = 1
+        elif y_train[target[0]].nunique() > 2:
+            final_function_1 = "softmax"
+            final_num_1 = y_train[target[0]].nunique()
+
+        if y_train[target[1]].nunique() == 2:
+            final_function_2 = "sigmoid"
+            final_num_2 = 1
+        elif y_train[target[1]].nunique() > 2:
+            final_function_2 = "softmax"
+            final_num_2 = y_train[target[1]].nunique()
+
+        if y_train[target[2]].nunique() == 2:
+            final_function_3 = "sigmoid"
+            final_num_3 = 1
+        elif y_train[target[2]].nunique() > 2:
+            final_function_3 = "softmax"
+            final_num_3 = y_train[target[2]].nunique()
+
+        target_1_layer_list = []
+        target_2_layer_list = []
+        target_3_layer_list = []
+
+        if function_type == "selu":
+            for (a, b) in enumerate(num_list):
+                if b == num_list[0]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_1))
+                    target_1_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_2))
+                    target_2_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_2_layer_list[-1]))
+
+                    target_3_layer_list.append(keras.layers.Dense(b, name = f"{target[2]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_3))
+                    target_3_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_3_layer_list[-1]))
+
+                elif b != num_list[0] and b != num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_2_layer_list[-1]))      
+
+                    target_3_layer_list.append(keras.layers.Dense(b, name = f"{target[2]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_3_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_3_layer_list[-1]))
+
+                elif b == num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(final_num_1, name = f"{target[0]}_{a + 1}", activation = final_function_1)(target_1_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dense(final_num_2, name = f"{target[1]}_{a + 1}", activation = final_function_2)(target_2_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.Dense(final_num_3, name = f"{target[2]}_{a + 1}", activation = final_function_3)(target_3_layer_list[-1]))
+
+            model_1 = keras.Model(inputs = [input_layer_1, input_layer_2, input_layer_3], outputs = [target_1_layer_list[-1], target_2_layer_list[-1], target_3_layer_list[-1]])
+            
+            print(f"{function_type} model for {target[0]}, {target[1]}, {target[2]} created")
+            return model_1
+        
+        elif function_type != "selu":
+            for (a, b) in enumerate(num_list): 
+                if b == num_list[0]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", activation = function_type)(input_layer_1))
+                    target_1_layer_list.append(keras.layers.BatchNormalization()(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", activation = function_type)(input_layer_2))
+                    target_2_layer_list.append(keras.layers.BatchNormalization()(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_2_layer_list[-1]))
+                    
+                    target_3_layer_list.append(keras.layers.Dense(b, name = f"{target[2]}_{a + 1}", activation = function_type)(input_layer_3))
+                    target_3_layer_list.append(keras.layers.BatchNormalization()(target_3_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_3_layer_list[-1]))
+
+                elif b != num_list[0] and b != num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", activation = function_type)(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.BatchNormalization()(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", activation = function_type)(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.BatchNormalization()(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_2_layer_list[-1]))
+
+                    target_3_layer_list.append(keras.layers.Dense(b, name = f"{target[2]}_{a + 1}", activation = function_type)(target_3_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.BatchNormalization()(target_3_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_3_layer_list[-1]))                    
+                
+                elif b == num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(final_num_1, name = f"{target[0]}_{a + 1}", activation = final_function_1)(target_1_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dense(final_num_2, name = f"{target[1]}_{a + 1}", activation = final_function_2)(target_2_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.Dense(final_num_3, name = f"{target[2]}_{a + 1}", activation = final_function_3)(target_3_layer_list[-1]))
+
+            model_1 = keras.Model(inputs = [input_layer_1, input_layer_2, input_layer_3], outputs = [target_1_layer_list[-1], target_2_layer_list[-1], target_3_layer_list[-1]])
+            
+            print(f"{function_type} model for {target[0]}, {target[1]}, {target[2]} created")
+            return model_1
+                
+    elif len(target) == 4:
+        input_layer_1 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[0]}")
+        input_layer_2 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[1]}")
+        input_layer_3 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[2]}")
+        input_layer_4 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[3]}")
+
+        if y_train[target[0]].nunique() == 2:
+            final_function_1 = "sigmoid"
+            final_num_1 = 1
+        elif y_train[target[0]].nunique() > 2:
+            final_function_1 = "softmax"
+            final_num_1 = y_train[target[0]].nunique()
+
+        if y_train[target[1]].nunique() == 2:
+            final_function_2 = "sigmoid"
+            final_num_2 = 1
+        elif y_train[target[1]].nunique() > 2:
+            final_function_2 = "softmax"
+            final_num_2 = y_train[target[1]].nunique()
+
+        if y_train[target[2]].nunique() == 2:
+            final_function_3 = "sigmoid"
+            final_num_3 = 1
+        elif y_train[target[2]].nunique() > 2:
+            final_function_3 = "softmax"
+            final_num_3 = y_train[target[2]].nunique()
+
+        if y_train[target[3]].nunique() == 2:
+            final_function_4 = "sigmoid"
+            final_num_4 = 1
+        elif y_train[target[3]].nunique() > 2:
+            final_function_4 = "softmax"
+            final_num_4 = y_train[target[3]].nunique()
+
+        target_1_layer_list = []
+        target_2_layer_list = []
+        target_3_layer_list = []
+        target_4_layer_list = []
+
+        if function_type == "selu":
+            for (a, b) in enumerate(num_list):
+                if b == num_list[0]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_1))
+                    target_1_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_2))
+                    target_2_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_2_layer_list[-1]))
+
+                    target_3_layer_list.append(keras.layers.Dense(b, name = f"{target[2]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_3))
+                    target_3_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_3_layer_list[-1]))
+
+                    target_4_layer_list.append(keras.layers.Dense(b, name = f"{target[3]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_4))
+                    target_4_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_4_layer_list[-1]))
+
+                elif b != num_list[0] and b != num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_2_layer_list[-1]))      
+
+                    target_3_layer_list.append(keras.layers.Dense(b, name = f"{target[2]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_3_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_3_layer_list[-1]))
+
+                    target_4_layer_list.append(keras.layers.Dense(b, name = f"{target[3]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_4_layer_list[-1]))
+                    target_4_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_4_layer_list[-1]))
+
+                elif b == num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(final_num_1, name = f"{target[0]}_{a + 1}", activation = final_function_1)(target_1_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dense(final_num_2, name = f"{target[1]}_{a + 1}", activation = final_function_2)(target_2_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.Dense(final_num_3, name = f"{target[2]}_{a + 1}", activation = final_function_3)(target_3_layer_list[-1]))
+                    target_4_layer_list.append(keras.layers.Dense(final_num_4, name = f"{target[3]}_{a + 1}", activation = final_function_4)(target_4_layer_list[-1]))
+
+            model_1 = keras.Model(inputs = [input_layer_1, input_layer_2, input_layer_3, input_layer_4], outputs = [target_1_layer_list[-1], target_2_layer_list[-1], target_3_layer_list[-1], target_4_layer_list[-1]])
+            
+            print(f"{function_type} model for {target[0]}, {target[1]}, {target[2]}, {target[3]} created")
+            return model_1
+                
+        elif function_type != "selu":
+            for (a, b) in enumerate(num_list): 
+                if b == num_list[0]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", activation = function_type)(input_layer_1))
+                    target_1_layer_list.append(keras.layers.BatchNormalization()(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", activation = function_type)(input_layer_2))
+                    target_2_layer_list.append(keras.layers.BatchNormalization()(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_2_layer_list[-1]))
+                    
+                    target_3_layer_list.append(keras.layers.Dense(b, name = f"{target[2]}_{a + 1}", activation = function_type)(input_layer_3))
+                    target_3_layer_list.append(keras.layers.BatchNormalization()(target_3_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_3_layer_list[-1]))
+
+                    target_4_layer_list.append(keras.layers.Dense(b, name = f"{target[3]}_{a + 1}", activation = function_type)(input_layer_4))
+                    target_4_layer_list.append(keras.layers.BatchNormalization()(target_4_layer_list[-1]))
+                    target_4_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_4_layer_list[-1]))
+
+                elif b != num_list[0] and b != num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", activation = function_type)(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.BatchNormalization()(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", activation = function_type)(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.BatchNormalization()(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_2_layer_list[-1]))
+
+                    target_3_layer_list.append(keras.layers.Dense(b, name = f"{target[2]}_{a + 1}", activation = function_type)(target_3_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.BatchNormalization()(target_3_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_3_layer_list[-1]))                    
+
+                    target_4_layer_list.append(keras.layers.Dense(b, name = f"{target[3]}_{a + 1}", activation = function_type)(target_4_layer_list[-1]))
+                    target_4_layer_list.append(keras.layers.BatchNormalization()(target_4_layer_list[-1]))
+                    target_4_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_4_layer_list[-1]))                    
+
+                elif b == num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(final_num_1, name = f"{target[0]}_{a + 1}", activation = final_function_1)(target_1_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dense(final_num_2, name = f"{target[1]}_{a + 1}", activation = final_function_2)(target_2_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.Dense(final_num_3, name = f"{target[2]}_{a + 1}", activation = final_function_3)(target_3_layer_list[-1]))
+                    target_4_layer_list.append(keras.layers.Dense(final_num_4, name = f"{target[3]}_{a + 1}", activation = final_function_4)(target_4_layer_list[-1]))
+
+            model_1 = keras.Model(inputs = [input_layer_1, input_layer_2, input_layer_3, input_layer_4], outputs = [target_1_layer_list[-1], target_2_layer_list[-1], target_3_layer_list[-1], target_4_layer_list[-1]])
+            
+            print(f"{function_type} model for {target[0]}, {target[1]}, {target[2]}, {target[3]} created")
+            return model_1
+            
+    elif len(target) == 5:
+        input_layer_1 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[0]}")
+        input_layer_2 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[1]}")
+        input_layer_3 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[2]}")
+        input_layer_4 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[3]}")
+        input_layer_5 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target[4]}")
+
+        if y_train[target[0]].nunique() == 2:
+            final_function_1 = "sigmoid"
+            final_num_1 = 1
+        elif y_train[target[0]].nunique() > 2:
+            final_function_1 = "softmax"
+            final_num_1 = y_train[target[0]].nunique()
+
+        if y_train[target[1]].nunique() == 2:
+            final_function_2 = "sigmoid"
+            final_num_2 = 1
+        elif y_train[target[1]].nunique() > 2:
+            final_function_2 = "softmax"
+            final_num_2 = y_train[target[1]].nunique()
+
+        if y_train[target[2]].nunique() == 2:
+            final_function_3 = "sigmoid"
+            final_num_3 = 1
+        elif y_train[target[2]].nunique() > 2:
+            final_function_3 = "softmax"
+            final_num_3 = y_train[target[2]].nunique()
+
+        if y_train[target[3]].nunique() == 2:
+            final_function_4 = "sigmoid"
+            final_num_4 = 1
+        elif y_train[target[3]].nunique() > 2:
+            final_function_4 = "softmax"
+            final_num_4 = y_train[target[3]].nunique()
+
+        if y_train[target[4]].nunique() == 2:
+            final_function_5 = "sigmoid"
+            final_num_5 = 1
+        elif y_train[target[4]].nunique() > 2:
+            final_function_5 = "softmax"
+            final_num_5 = y_train[target[4]].nunique()
+        
+        target_1_layer_list = []
+        target_2_layer_list = []
+        target_3_layer_list = []
+        target_4_layer_list = []
+        target_5_layer_list = []
+
+        if function_type == "selu":
+            for (a, b) in enumerate(num_list):
+                if b == num_list[0]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_1))
+                    target_1_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_2))
+                    target_2_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_2_layer_list[-1]))
+
+                    target_3_layer_list.append(keras.layers.Dense(b, name = f"{target[2]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_3))
+                    target_3_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_3_layer_list[-1]))
+
+                    target_4_layer_list.append(keras.layers.Dense(b, name = f"{target[3]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_4))
+                    target_4_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_4_layer_list[-1]))
+
+                    target_5_layer_list.append(keras.layers.Dense(b, name = f"{target[4]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_5))
+                    target_5_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_5_layer_list[-1]))
+
+                elif b != num_list[0] and b != num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_2_layer_list[-1]))      
+
+                    target_3_layer_list.append(keras.layers.Dense(b, name = f"{target[2]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_3_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_3_layer_list[-1]))
+
+                    target_4_layer_list.append(keras.layers.Dense(b, name = f"{target[3]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_4_layer_list[-1]))
+                    target_4_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_4_layer_list[-1]))
+
+                    target_5_layer_list.append(keras.layers.Dense(b, name = f"{target[4]}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_5_layer_list[-1]))
+                    target_5_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_5_layer_list[-1]))
+
+                elif b == num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(final_num_1, name = f"{target[0]}_{a + 1}", activation = final_function_1)(target_1_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dense(final_num_2, name = f"{target[1]}_{a + 1}", activation = final_function_2)(target_2_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.Dense(final_num_3, name = f"{target[2]}_{a + 1}", activation = final_function_3)(target_3_layer_list[-1]))
+                    target_4_layer_list.append(keras.layers.Dense(final_num_4, name = f"{target[3]}_{a + 1}", activation = final_function_4)(target_4_layer_list[-1]))
+                    target_5_layer_list.append(keras.layers.Dense(final_num_5, name = f"{target[4]}_{a + 1}", activation = final_function_5)(target_5_layer_list[-1]))
+
+            model_1 = keras.Model(inputs = [input_layer_1, input_layer_2, input_layer_3, input_layer_4, input_layer_5], outputs = [target_1_layer_list[-1], target_2_layer_list[-1], target_3_layer_list[-1], target_4_layer_list[-1], target_5_layer_list[-1]])
+            
+            print(f"{function_type} model for {target[0]}, {target[1]}, {target[2]}, {target[3]} created")
+            return model_1
+
+        elif function_type != "selu":
+            for (a, b) in enumerate(num_list): 
+                if b == num_list[0]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", activation = function_type)(input_layer_1))
+                    target_1_layer_list.append(keras.layers.BatchNormalization()(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", activation = function_type)(input_layer_2))
+                    target_2_layer_list.append(keras.layers.BatchNormalization()(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_2_layer_list[-1]))
+                    
+                    target_3_layer_list.append(keras.layers.Dense(b, name = f"{target[2]}_{a + 1}", activation = function_type)(input_layer_3))
+                    target_3_layer_list.append(keras.layers.BatchNormalization()(target_3_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_3_layer_list[-1]))
+
+                    target_4_layer_list.append(keras.layers.Dense(b, name = f"{target[3]}_{a + 1}", activation = function_type)(input_layer_4))
+                    target_4_layer_list.append(keras.layers.BatchNormalization()(target_4_layer_list[-1]))
+                    target_4_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_4_layer_list[-1]))
+
+                    target_5_layer_list.append(keras.layers.Dense(b, name = f"{target[4]}_{a + 1}", activation = function_type)(input_layer_5))
+                    target_5_layer_list.append(keras.layers.BatchNormalization()(target_5_layer_list[-1]))
+                    target_5_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_5_layer_list[-1]))
+
+                elif b != num_list[0] and b != num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(b, name = f"{target[0]}_{a + 1}", activation = function_type)(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.BatchNormalization()(target_1_layer_list[-1]))
+                    target_1_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                    target_2_layer_list.append(keras.layers.Dense(b, name = f"{target[1]}_{a + 1}", activation = function_type)(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.BatchNormalization()(target_2_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_2_layer_list[-1]))
+
+                    target_3_layer_list.append(keras.layers.Dense(b, name = f"{target[2]}_{a + 1}", activation = function_type)(target_3_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.BatchNormalization()(target_3_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_3_layer_list[-1]))                    
+
+                    target_4_layer_list.append(keras.layers.Dense(b, name = f"{target[3]}_{a + 1}", activation = function_type)(target_4_layer_list[-1]))
+                    target_4_layer_list.append(keras.layers.BatchNormalization()(target_4_layer_list[-1]))
+                    target_4_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_4_layer_list[-1])) 
+
+                    target_5_layer_list.append(keras.layers.Dense(b, name = f"{target[4]}_{a + 1}", activation = function_type)(target_5_layer_list[-1]))
+                    target_5_layer_list.append(keras.layers.BatchNormalization()(target_5_layer_list[-1]))
+                    target_5_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_5_layer_list[-1])) 
+
+                elif b == num_list[-1]:
+                    target_1_layer_list.append(keras.layers.Dense(final_num_1, name = f"{target[0]}_{a + 1}", activation = final_function_1)(target_1_layer_list[-1]))
+                    target_2_layer_list.append(keras.layers.Dense(final_num_2, name = f"{target[1]}_{a + 1}", activation = final_function_2)(target_2_layer_list[-1]))
+                    target_3_layer_list.append(keras.layers.Dense(final_num_3, name = f"{target[2]}_{a + 1}", activation = final_function_3)(target_3_layer_list[-1]))
+                    target_4_layer_list.append(keras.layers.Dense(final_num_4, name = f"{target[3]}_{a + 1}", activation = final_function_4)(target_4_layer_list[-1]))
+                    target_5_layer_list.append(keras.layers.Dense(final_num_5, name = f"{target[4]}_{a + 1}", activation = final_function_5)(target_5_layer_list[-1]))
+
+            model_1 = keras.Model(inputs = [input_layer_1, input_layer_2, input_layer_3, input_layer_4, input_layer_5], outputs = [target_1_layer_list[-1], target_2_layer_list[-1], target_3_layer_list[-1], target_4_layer_list[-1], target_5_layer_list[-1]])
+            
+            print(f"{function_type} model for {target[0]}, {target[1]}, {target[2]}, {target[3]} created")
+            return model_1
+
+def single_model_compile_fit(layer_num, model, X_train, X_test, y_train, y_test, target, model_location, epochs = 200, batch_size = 32, optimizer = "adam"):
+    loss_list = []
+    early_stopping_list = []
+    
+    early_stopping = keras.callbacks.EarlyStopping(
+        patience = 10, 
+        min_delta = 0.001,
+        restore_best_weights = True
+    )
+
+    optimizer = optimizer.lower()
+
+    if optimizer == "adam":
+        optimizer = tf.keras.optimizers.Adam()
+    elif optimizer == "sgd":
+        optimizer = tf.keras.optimizers.SGD()
+    elif optimizer == "adadelta":
+        optimizer = tf.keras.optimizers.Adadelta()
+    elif optimizer == "adagrad":
+        optimizer = tf.keras.optimizers.Adagrad()
+    elif optimizer == "adamax":
+        optimizer = tf.keras.optimizers.Adamax()
+    elif optimizer == "nadam":
+        optimizer = tf.keras.optimizers.Nadam()
+    elif optimizer == "ftrl":
+        optimizer = tf.keras.optimizers.Ftrl()
+
+    early_stopping_list.append(early_stopping)
+    if len(y_train[target].unique()) == 2:
+        loss_list.append(keras.losses.BinaryCrossentropy())
+        target_train_var = y_train[target]
+        target_test_var = y_test[target]
+    elif len(y_train[target].unique()) > 2:
+        loss_list.append(keras.losses.CategoricalCrossentropy())
+        target_train_var = pd.get_dummies(y_train[target])
+        target_test_var = pd.get_dummies(y_test[target])
+        target_train_var.columns = [str(i) for i in target_train_var.columns]
+        target_test_var.columns = [str(i) for i in target_test_var.columns]
+        
+    input_train_dict = dict(zip([f"input_layer_{target}"], [X_train]))
+    output_train_dict = dict(zip([f"{target}_{layer_num}"], [target_train_var]))
+
+    input_test_dict = dict(zip([f"input_layer_{target}"], [X_test]))
+    output_test_dict = dict(zip([f"{target}_{layer_num}"], [target_test_var]))
+
+    start = time.time()
+
+    model.compile(
+        optimizer = optimizer, 
+        loss = loss_list, 
+        metrics = ["accuracy"]
+    )
+
+    model.fit(
+        input_train_dict,
+        output_train_dict, 
+        validation_data = (
+                input_test_dict, 
+                output_test_dict
+            ),
+            epochs = epochs, 
+        batch_size = batch_size, 
+        verbose = 1, 
+        callbacks = early_stopping_list
+    )
+    
+    end = time.time()
+    print(f"Training complete, total time: {(end - start) / 60}")
+
+    print("")
+    print(f"Saving model to {os.getcwd()}")
+    current_time = f"datetime.now()"[0:16]
+    model.save(f"{model_location}/Model_{current_time}.h5")
+    print("Save complete")
+
+    return model
+    
+def multi_model_compile_fit(layer_num, model, X_train, X_test, y_train, y_test, target, model_location, epochs = 200, batch_size = 32, optimizer = "adam"):
+    loss_list = []
+    early_stopping_list = []
+    
+    early_stopping = keras.callbacks.EarlyStopping(
+        patience = 10, 
+        min_delta = 0.001,
+        restore_best_weights = True
+    )
+
+    optimizer = optimizer.lower()
+
+    if optimizer == "adam":
+        optimizer = tf.keras.optimizers.Adam()
+    elif optimizer == "sgd":
+        optimizer = tf.keras.optimizers.SGD()
+    elif optimizer == "adadelta":
+        optimizer = tf.keras.optimizers.Adadelta()
+    elif optimizer == "adagrad":
+        optimizer = tf.keras.optimizers.Adagrad()
+    elif optimizer == "adamax":
+        optimizer = tf.keras.optimizers.Adamax()
+    elif optimizer == "nadam":
+        optimizer = tf.keras.optimizers.Nadam()
+    elif optimizer == "ftrl":
+        optimizer = tf.keras.optimizers.Ftrl()
+
+    train_target_list = []
+    test_target_list = []
+
+    for i in target:
+        early_stopping_list.append(early_stopping)
+        if y_train[i].nunique() == 2:
+            loss_list.append(keras.losses.BinaryCrossentropy())
+            train_target_list.append(y_train[i])
+            test_target_list.append(y_test[i])
+        elif y_train[i].nunique() > 2:
+            loss_list.append(keras.losses.CategoricalCrossentropy())
+            target_train = pd.get_dummies(y_train[i])
+            target_test = pd.get_dummies(y_test[i])
+            target_train.columns = [i for i in target_train.columns]
+            target_test.columns = [i for i in target_test.columns]
+            train_target_list.append(target_train)
+            test_target_list.append(target_test)
+    
+    model.compile(
+        optimizer = optimizer,
+        loss = loss_list, 
+        metrics = ["accuracy"]
+    )
+
+    if len(target) == 2:
+        model.fit(
+            {
+                f"input_layer_{target[0]}" : X_train, 
+                f"input_layer_{target[1]}" : X_train
+            },
+            {
+                f"{target[0]}_{layer_num}" : train_target_list[0], 
+                f"{target[1]}_{layer_num}" : train_target_list[1] 
+            },
+            validation_data = (
+                {
+                    f"input_layer_{target[0]}" : X_test, 
+                    f"input_layer_{target[1]}" : X_test   
+                },
+                {
+                    f"{target[0]}_{layer_num}" : test_target_list[0], 
+                    f"{target[1]}_{layer_num}" : test_target_list[1]                     
+                }
+            ),
+            epochs = epochs, 
+            batch_size = batch_size, 
+            verbose = 1, 
+            callbacks = early_stopping_list
+        )
+
+        return model
+
+    elif len(target) == 3:
+        model.fit(
+            {
+                f"input_layer_{target[0]}" : X_train, 
+                f"input_layer_{target[1]}" : X_train,
+                f"input_layer_{target[2]}" : X_train
+            },
+            {
+                f"{target[0]}_{layer_num}" : train_target_list[0], 
+                f"{target[1]}_{layer_num}" : train_target_list[1], 
+                f"{target[2]}_{layer_num}" : train_target_list[2] 
+            },
+            validation_data = (
+                {
+                    f"input_layer_{target[0]}" : X_test, 
+                    f"input_layer_{target[1]}" : X_test, 
+                    f"input_layer_{target[2]}" : X_test
+                },
+                {
+                    f"{target[0]}_{layer_num}" : test_target_list[0], 
+                    f"{target[1]}_{layer_num}" : test_target_list[1], 
+                    f"{target[2]}_{layer_num}" : test_target_list[2]
+                }
+            ),
+            epochs = epochs, 
+            batch_size = batch_size, 
+            verbose = 1, 
+            callbacks = early_stopping_list
+        )
+
+        return model
+
+    elif len(target) == 4:
+        model.fit(
+            {
+                f"input_layer_{target[0]}" : X_train, 
+                f"input_layer_{target[1]}" : X_train,
+                f"input_layer_{target[2]}" : X_train, 
+                f"input_layer_{target[3]}" : X_train
+            },
+            {
+                f"{target[0]}_{layer_num}" : train_target_list[0], 
+                f"{target[1]}_{layer_num}" : train_target_list[1], 
+                f"{target[2]}_{layer_num}" : train_target_list[2], 
+                f"{target[3]}_{layer_num}" : train_target_list[3]  
+            },
+            validation_data = (
+                {
+                    f"input_layer_{target[0]}" : X_test, 
+                    f"input_layer_{target[1]}" : X_test, 
+                    f"input_layer_{target[2]}" : X_test, 
+                    f"input_layer_{target[3]}" : X_test
+                },
+                {
+                    f"{target[0]}_{layer_num}" : test_target_list[0], 
+                    f"{target[1]}_{layer_num}" : test_target_list[1], 
+                    f"{target[2]}_{layer_num}" : test_target_list[2], 
+                    f"{target[3]}_{layer_num}" : test_target_list[3]
+                }
+            ),
+            epochs = epochs, 
+            batch_size = batch_size, 
+            verbose = 1, 
+            callbacks = early_stopping_list
+        )
+
+        return model
+
+    elif len(target) == 5:
+        model.fit(
+            {
+                f"input_layer_{target[0]}" : X_train, 
+                f"input_layer_{target[1]}" : X_train,
+                f"input_layer_{target[2]}" : X_train, 
+                f"input_layer_{target[3]}" : X_train, 
+                f"input_layer_{target[4]}" : X_train
+            },
+            {
+                f"{target[0]}_{layer_num}" : train_target_list[0], 
+                f"{target[1]}_{layer_num}" : train_target_list[1], 
+                f"{target[2]}_{layer_num}" : train_target_list[2], 
+                f"{target[3]}_{layer_num}" : train_target_list[3], 
+                f"{target[4]}_{layer_num}" : train_target_list[4]  
+            },
+            validation_data = (
+                {
+                    f"input_layer_{target[0]}" : X_test, 
+                    f"input_layer_{target[1]}" : X_test, 
+                    f"input_layer_{target[2]}" : X_test, 
+                    f"input_layer_{target[3]}" : X_test, 
+                    f"input_layer_{target[4]}" : X_test
+                },
+                {
+                    f"{target[0]}_{layer_num}" : test_target_list[0], 
+                    f"{target[1]}_{layer_num}" : test_target_list[1], 
+                    f"{target[2]}_{layer_num}" : test_target_list[2], 
+                    f"{target[3]}_{layer_num}" : test_target_list[3], 
+                    f"{target[4]}_{layer_num}" : test_target_list[4]
+                }
+            ),
+            epochs = epochs, 
+            batch_size = batch_size, 
+            verbose = 1, 
+            callbacks = early_stopping_list
+        )
+
+        return model
+        
+def get_predictions_accuracy(target, model, X_data, y_data, X_train = None, X_test = None, y_train = None, y_test = None):
+    if type(target) == str:
+        if len(y_data[target].unique()) == 2: 
+            y_data[f"{target}_Prob"] = model.predict(X_data)
+            y_data.loc[y_data[f"{target}_Prob"] >= 0.5, f"Predicted_{target}"] = 1
+            y_data.loc[y_data[f"{target}_Prob"] < 0.5, f"Predicted_{target}"] = 0
+            
+            classification_report_A = pd.DataFrame(
+                classification_report(
+                    y_data[target], 
+                    y_data[f"Predicted_{target}"], 
+                    output_dict = True
+                )
+            ).T
+
+            return [classification_report_A, y_data]
+
+        elif len(y_data[target].unique()) > 2:
+            predicted_df = pd.DataFrame(model.predict(X_data))
+            dummy_y_data = pd.get_dummies(y_data[target])
+            predicted_df.columns = [str(i) for i in dummy_y_data.columns]
+
+            predicted_values = []
+            predicted_df_1 = predicted_df.T.reset_index()
+
+            predictions_list = list(predicted_df_1["index"])
+
+            for (a, b) in enumerate(predicted_df_1.columns):
+                if b == "index":
+                    pass
+                elif b != "index": 
+                    new_values = list(predicted_df_1[b])
+                    predicted_values.append(predictions_list[new_values.index(max(new_values))])
+                    print(f"Column {a + 1} processed, remaining columns: {len(predicted_df_1.columns) - (a + 1)}")
+
+            y_data[f"Predicted_{target}"] = predicted_values
+            y_data[f"Predicted_{target}"] = y_data[f"Predicted_{target}"].astype(float)
+            y_data.loc[y_data[f"Predicted_{target}"] == y_data[target], f"{target}_Accuracy"] = 1
+            y_data.loc[y_data[f"Predicted_{target}"] != y_data[target], f"{target}_Accuracy"] = 0
+            y_data["Countcol"] = 1
+
+            classification_report_A = pd.DataFrame(
+                classification_report(
+                    y_data[f"Countcol"],
+                    y_data[f"{target}_Accuracy"], 
+                    output_dict = True
+                )
+            ).T
+
+            return [classification_report_A, y_data, predicted_df]
+            
+def get_multi_predictions_accuracy(target_index, target, model, X_data, y_data, target_num, X_train = None, X_test = None, y_train = None, y_test = None):
+    if type(target) == str:
+        if len(y_data[target].unique()) == 2: 
+            y_data[f"{target}_Prob"] = model.predict([X_data for i in range(target_num)])[target_index]
+            y_data.loc[y_data[f"{target}_Prob"] >= 0.5, f"Predicted_{target}"] = 1
+            y_data.loc[y_data[f"{target}_Prob"] < 0.5, f"Predicted_{target}"] = 0
+            
+            classification_report_A = pd.DataFrame(
+                classification_report(
+                    y_data[target], 
+                    y_data[f"Predicted_{target}"], 
+                    output_dict = True
+                )
+            ).T
+
+            return [classification_report_A, y_data]
+
+        elif len(y_data[target].unique()) > 2:
+            predicted_df = pd.DataFrame(model.predict([X_data for i in range(target_num)])[target_index])
+            dummy_y_data = pd.get_dummies(y_data[target])
+            predicted_df.columns = [str(i) for i in dummy_y_data.columns]
+
+            predicted_values = []
+            predicted_df_1 = predicted_df.T.reset_index()
+
+            predictions_list = list(predicted_df_1["index"])
+
+            for (a, b) in enumerate(predicted_df_1.columns):
+                if b == "index":
+                    pass
+                elif b != "index": 
+                    new_values = list(predicted_df_1[b])
+                    predicted_values.append(predictions_list[new_values.index(max(new_values))])
+                    print(f"Column {a + 1} processed, remaining columns: {len(predicted_df_1.columns) - (a + 1)}")
+
+            y_data[f"Predicted_{target}"] = predicted_values
+            y_data[f"Predicted_{target}"] = y_data[f"Predicted_{target}"].astype(float)
+            y_data.loc[y_data[f"Predicted_{target}"] == y_data[target], f"{target}_Accuracy"] = 1
+            y_data.loc[y_data[f"Predicted_{target}"] != y_data[target], f"{target}_Accuracy"] = 0
+            y_data["Countcol"] = 1
+
+            classification_report_A = pd.DataFrame(
+                classification_report(
+                    y_data[f"Countcol"],
+                    y_data[f"{target}_Accuracy"], 
+                    output_dict = True
+                )
+            ).T
+
+            return [classification_report_A, y_data, predicted_df]
+            
+def summary_table(y_data, target, order = False, binary_yn = True, cont_data = None):
+    if binary_yn == True:
+        y_data[f"{target}_Boundary"] = pd.qcut(y_data[f"{target}_Prob"], 10, duplicates = "drop")
+        t1_result = y_data[[f"{target}_Boundary", "Countcol", target]].groupby(f"{target}_Boundary", as_index = False).sum()
+        t1_result.columns = [f"{target} 등급 구간", "총 건수", "Target 건수"]
+        t1_result[f"{target} 등급 구간"] = t1_result[f"{target} 등급 구간"].astype(str)
+        t1_result = t1_result.sort_values(by = f"{target} 등급 구간", ascending = False)
+        t1_result["Non-Target 건수"] = t1_result["총 건수"] - t1_result["Target 건수"]
+        t1_result["건수 비율"] = t1_result['총 건수'] / t1_result["총 건수"].sum()
+        t1_result["총 Target 건수 대비 Target 비율"] = t1_result["Target 건수"] / t1_result["Target 건수"].sum() 
+        t1_result["총 Non-Target 건수 대비 Non-Target 비율"] = t1_result["Non-Target 건수"] / t1_result["Non-Target 건수"].sum()
+        t1_result["등급별 Target 비율"] = t1_result["Target 건수"] / t1_result["총 건수"] 
+        t1_result["누적 총 Target 건수 대비 Target 비율"] = t1_result["총 Target 건수 대비 Target 비율"].cumsum()
+        t1_result["누적 총 Non-Target 건수 대비 Non-Target 비율"] = t1_result["총 Non-Target 건수 대비 Non-Target 비율"].cumsum()
+        
+        t1_result["KS"] = np.round(t1_result["누적 총 Target 건수 대비 Target 비율"] - t1_result["누적 총 Non-Target 건수 대비 Non-Target 비율"], 3) * 100
+        t1_result["Rev_누적 총 Target 건수 대비 Target 비율"] = t1_result["총 Target 건수 대비 Target 비율"][::-1].cumsum()
+        t1_result["AUC"] = ((0.5 * t1_result["총 Target 건수 대비 Target 비율"] * t1_result["총 Non-Target 건수 대비 Non-Target 비율"]) + ((1 - t1_result["Rev_누적 총 Target 건수 대비 Target 비율"]) * t1_result["총 Non-Target 건수 대비 Non-Target 비율"]))
+
+        ar = (t1_result["AUC"].sum() * 2) - 1
+        print(f"AR Value: {ar}")
+
+        if order == False:
+            t1_score_dict = dict(zip(sorted(list(range(1, 11)), reverse = True), list(t1_result[f"{target} 등급 구간"].astype(str))))
+            t1_result[f"{target} 등급"] = [i for i in t1_score_dict]
+            y_data[f"{target} Level"] = y_data[f"{target}_Boundary"]
+
+            for i in t1_score_dict:
+                y_data[f"{target} Level"] = y_data[f"{target} Level"].astype(str).replace(t1_score_dict[i], i)
+
+        elif order == True:
+            t1_score_dict = dict(zip(sorted(list(range(1, 11))), list(t1_result[f"{target} 등급 구간"].astype(str))))
+            t1_result[f"{target} 등급"] = [i for i in t1_score_dict]
+            y_data[f"{target} Level"] = y_data[f"{target}_Boundary"]
+
+            for i in t1_score_dict:
+                y_data[f"{target} Level"] = y_data[f"{target} Level"].astype(str).replace(t1_score_dict[i], i)
+
+        results_dict = dict(zip(["Summary_Table", "y_data"], [t1_result, y_data]))
+
+        print(
+            f"""
+            Summary Table for {target} completed, use the following commands to access results:
+            1. var_name["Summary_Table"]
+            2. var_name["y_data"]
+            """
+        )
+
+        return results_dict
+    
+    elif binary_yn != True:
+        df = pd.get_dummies(y_data[target])
+        df.columns = [str(i) for i in df.columns]
+        cont_data.columns = [str(i) for i in df.columns]
+
+        df_list = []
+
+        for i in df.columns:
+            new_df = pd.DataFrame({
+                f"{i}_확률" : list(cont_data[i]), 
+                f"{i}_타겟_건수" : list(df[i])
+            })
+
+            new_df["구간_값"] = pd.qcut(new_df[f"{i}_확률"], 10, duplicates = "drop")
+            new_df["countcol"] = 1
+            new_df = new_df[["구간_값", "countcol", f"{i}_타겟_건수"]].groupby("구간_값").sum()
+            new_df["Non-target"] = new_df["countcol"] - new_df[f"{i}_타겟_건수"]
+            new_df["타겟_비율"] = new_df[f"{i}_타겟_건수"] / new_df[f"{i}_타겟_건수"].sum()
+            new_df["Non-target_비율"] = new_df["Non-target"] / new_df["Non-target"].sum()
+            new_df["누적_타겟_비율"] = new_df["타겟_비율"].cumsum()
+            new_df["Rev_누적_타겟_비율"] = new_df["타겟_비율"][::-1].cumsum()
+            new_df["누적_Non-target_비율"] = new_df["Non-target_비율"].cumsum()
+            new_df["auc"] = ((0.5 * new_df["타겟_비율"] * new_df["Non-target_비율"]) + ((1 - new_df["Rev_누적_타겟_비율"]) * new_df["Non-target_비율"]))
+
+            df_list.append((new_df["auc"].sum() * 2) - 1)
+        
+        print(f"AR_Value: {sum(df_list) / len(df_list)}")
+        
+def pivot_table_creator(y_data, var_1, var_2, value, function = 'sum'):
+    y_data[var_1] = y_data[var_1].astype(str).str.zfill(2)
+    y_data[var_2] = y_data[var_2].astype(str).str.zfill(2)
+
+    df_1 = y_data.pivot_table(
+        index = var_1,
+        columns = var_2, 
+        values = value, 
+        aggfunc = function, 
+        margins = True, 
+        fill_value = "."
+    )
+
+    return df_1
+    
+model = single_model_creator(y_train, "loan_target", 183, 8, 40, "relu")
+model_1 = single_model_compile_fit(8, model, X_train, X_test, y_train, y_test, "loan_target", "C:/Users/Admin/Documents", 1, 60000)
+model_2 = multi_model_creator(y_train, [i for i in y_train.columns], X_train.shape[1], 8, 40, "relu")
+model_2A = multi_model_compile_fit(8, model_2, X_train, X_test, y_train, y_test, [i for i in y_train.columns], os.getcwd(), 1, 60000)
+result_1 = get_predictions_accuracy("loan_target", model_1, X_train, y_train)
+result_2 = get_multi_predictions_accuracy(1, "loan_target", model_2, X_train, y_train, 3)
+summary_table(result_2[1], "loan_target", False, False, result_2[2])
