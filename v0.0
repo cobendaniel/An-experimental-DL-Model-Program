@@ -1,0 +1,404 @@
+import pandas as pd 
+import numpy as np 
+import time 
+import os 
+
+from sklearn.model_selection import train_test_split 
+import tensorflow as tf 
+import keras
+from tensorflow.keras.optimizers import SGD 
+
+from sklearn.preprocessing import StandardScaler, MinMaxScaler 
+from sklearn.metrics import classification_report, r2_score, accuracy_score
+scaler = MinMaxScaler() 
+
+from proc_freq import * 
+
+df = pd.read_csv(r"C:\Users\Admin\Downloads\loan_data_2007_2014.csv")
+
+def model_creator(target_1, target_2, target_3, y_train, input_shape, function_type):
+
+    input_layer_1 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target_1}")
+    input_layer_2 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target_2}")
+    input_layer_3 = keras.layers.Input(shape = (input_shape), name = f"input_layer_{target_3}")
+
+    if len(y_train[target_1].unique()) == 2:
+        final_function_1 = "sigmoid"
+    elif len(y_train[target_1].unique()) > 2:
+        final_function_1 = "softmax"
+
+    if len(y_train[target_2].unique()) == 2:
+        final_function_2 = "sigmoid"
+    elif len(y_train[target_2].unique()) > 2:
+        final_function_2 = "softmax"
+
+    if len(y_train[target_3].unique()) == 2:
+        final_function_3 = "sigmoid"
+    elif len(y_train[target_3].unique()) > 2:
+        final_function_3 = "softmax"
+
+    print("Input number of layers for the model")
+    layer_num = int(input())
+
+    print("")
+    print("Input number of base neurons")
+    neuron_num = int(input())
+
+    print
+    (
+        f"""
+        Target 1 defined as {target_1}, number of unique classes = {len(y_train[target_1].unique())}
+        Final layer activation function for {target_1} defined as {final_function_1}
+
+        Target 2 defined as {target_2}, number of unique classes = {len(y_train[target_2].unique())}
+        Final layer activation function for {target_2} defined as {final_function_2}
+
+        Target 3 defined as {target_3}, number of unique classes = {len(y_train[target_3].unique())}
+        Final layer activation function for {target_3} defined as {final_function_3}
+        """
+    )    
+
+    num_list = sorted(list(range(neuron_num, neuron_num + (8 * layer_num), 8)), reverse = True)
+
+    target_1_layer_list = []
+    target_2_layer_list = []
+    target_3_layer_list = []
+
+    if function_type == "selu":
+        for (a, b) in enumerate(num_list):
+            if b == num_list[0]:
+                target_1_layer_list.append(keras.layers.Dense(b, name = f"{target_1}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_1))
+                target_1_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                target_2_layer_list.append(keras.layers.Dense(b, name = f"{target_2}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_2))
+                target_2_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_2_layer_list[-1]))
+
+                target_3_layer_list.append(keras.layers.Dense(b, name = f"{target_3}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(input_layer_3))
+                target_3_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_3_layer_list[-1]))
+
+            elif b != num_list[0] and b != num_list[-1]:
+                target_1_layer_list.append(keras.layers.Dense(b, name = f"{target_1}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_1_layer_list[-1]))
+                target_1_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                target_2_layer_list.append(keras.layers.Dense(b, name = f"{target_2}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_2_layer_list[-1]))
+                target_2_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_2_layer_list[-1]))
+
+                target_3_layer_list.append(keras.layers.Dense(b, name = f"{target_3}_{a + 1}", kernel_initializer = "lecun_normal", activation = function_type)(target_3_layer_list[-1]))
+                target_3_layer_list.append(keras.layers.AlphaDropout(rate = 0.1)(target_3_layer_list[-1]))
+
+            elif b == num_list[-1]:
+                target_1_layer_list.append(keras.layers.Dense(1, name = f"{target_1}_{a + 1}", activation = final_function_1)(target_1_layer_list[-1]))
+                target_2_layer_list.append(keras.layers.Dense(1, name = f"{target_2}_{a + 1}", activation = final_function_2)(target_2_layer_list[-1]))
+                target_3_layer_list.append(keras.layers.Dense(30, name = f"{target_3}_{a + 1}", activation = final_function_3)(target_3_layer_list[-1]))
+
+        model_1 = keras.Model(inputs = [input_layer_1, input_layer_2, input_layer_3], outputs = [target_1_layer_list[-1], target_2_layer_list[-1], target_3_layer_list[-1]])
+        print(f"{function_type} model for {target_1}, {target_2}, {target_3} created")
+        return model_1
+
+    elif function_type != "selu":
+        for (a, b) in enumerate(num_list):
+            if b == num_list[0]:
+                target_1_layer_list.append(keras.layers.Dense(b, name = f"{target_1}_{a + 1}", activation = function_type)(input_layer_1))
+                target_1_layer_list.append(keras.layers.BatchNormalization()(target_1_layer_list[-1]))
+                target_1_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                target_2_layer_list.append(keras.layers.Dense(b, name = f"{target_2}_{a + 1}", activation = function_type)(input_layer_2))
+                target_2_layer_list.append(keras.layers.BatchNormalization()(target_2_layer_list[-1]))
+                target_2_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_2_layer_list[-1]))
+
+                target_3_layer_list.append(keras.layers.Dense(b, name = f"{target_3}_{a + 1}", activation = function_type)(input_layer_3))
+                target_3_layer_list.append(keras.layers.BatchNormalization()(target_3_layer_list[-1]))
+                target_3_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_3_layer_list[-1]))
+
+            elif b != num_list[0] and b != num_list[-1]:
+                target_1_layer_list.append(keras.layers.Dense(b, name = f"{target_1}_{a + 1}", activation = function_type)(target_1_layer_list[-1]))
+                target_1_layer_list.append(keras.layers.BatchNormalization()(target_1_layer_list[-1]))
+                target_1_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_1_layer_list[-1]))
+
+                target_2_layer_list.append(keras.layers.Dense(b, name = f"{target_2}_{a + 1}", activation = function_type)(target_2_layer_list[-1]))
+                target_2_layer_list.append(keras.layers.BatchNormalization()(target_2_layer_list[-1]))
+                target_2_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_2_layer_list[-1]))
+
+                target_3_layer_list.append(keras.layers.Dense(b, name = f"{target_3}_{a + 1}", activation = function_type)(target_3_layer_list[-1]))
+                target_3_layer_list.append(keras.layers.BatchNormalization()(target_3_layer_list[-1]))
+                target_3_layer_list.append(keras.layers.Dropout(rate = 0.1)(target_3_layer_list[-1]))
+
+            elif b == num_list[-1]:
+                target_1_layer_list.append(keras.layers.Dense(1, name = f"{target_1}_{a + 1}", activation = final_function_1)(target_1_layer_list[-1]))
+                target_2_layer_list.append(keras.layers.Dense(1, name = f"{target_2}_{a + 1}", activation = final_function_2)(target_2_layer_list[-1]))
+                target_3_layer_list.append(keras.layers.Dense(30, name = f"{target_3}_{a + 1}", activation = final_function_3)(target_3_layer_list[-1]))
+
+        model_1 = keras.Model(inputs = [input_layer_1, input_layer_2, input_layer_3], outputs = [target_1_layer_list[-1], target_2_layer_list[-1], target_3_layer_list[-1]])
+        print(f"{function_type} model for {target_1}, {target_2}, {target_3} created")
+        return model_1
+    
+def model_compile_fit(layer_num, model, X_train, X_test, y_train, y_test, target_1, target_2, target_3, epochs = 200, batch_size = 32):
+
+    print("Please choose an optimizer (adam / sgd)") 
+    opt_func = input().lower()
+
+    if opt_func == "adam":
+        final_opt = "adam"
+    elif opt_func == "sgd":
+        final_opt = SGD(lr = 0.01, momentum = 0.9, decay = 0.09)
+
+    early_stopping = keras.callbacks.EarlyStopping(
+        patience = 10, 
+        min_delta = 0.001, 
+        restore_best_weights = True
+    )
+
+    target_order = []
+
+    if len(y_train[target_1].unique()) == 2:
+        target_A = y_train[target_1]
+        target_A_test = y_test[target_1]
+        target_order.append("A. Binary")
+    
+    elif len(y_train[target_2].unique()) > 2:
+        target_A = pd.get_dummies(y_train[target_1])
+        target_A_test = pd.get_dummies(y_test[target_1])
+        target_order.append("A. Non-Binary")
+
+    if len(y_train[target_2].unique()) == 2:
+        target_B = y_train[target_2]
+        target_B_test = y_test[target_2]
+        target_order.append("B. Binary")
+    
+    elif len(y_train[target_2].unique()) > 2:
+        target_B = pd.get_dummies(y_train[target_2])
+        target_B_test = pd.get_dummies(y_test[target_2])
+        target_order.append("B. Non-Binary")
+
+    if len(y_train[target_3].unique()) == 2:
+        target_C = y_train[target_3]
+        target_C_test = y_test[target_3]
+        target_order.append("C. Binary")
+    
+    elif len(y_train[target_3].unique()) > 2:
+        target_C = pd.get_dummies(y_train[target_3])
+        target_C_test = pd.get_dummies(y_test[target_3])
+        target_order.append("C. Non-Binary")
+
+    if target_order == ["A. Non-Binary", "B. Binary", "C. Binary"]:
+        loss_list = [
+            keras.losses.CategoricalCrossentropy(), 
+            keras.losses.BinaryCrossentropy(), 
+            keras.losses.BinaryCrossentropy()
+        ]
+
+    elif target_order == ["A. Binary", "B. Non-Binary", "C. Binary"]:
+        loss_list = [
+            keras.losses.BinaryCrossentropy(), 
+            keras.losses.CategoricalCrossentropy(),
+            keras.losses.BinaryCrossentropy()
+        ]
+
+    elif target_order == ["A. Binary", "B. Binary", "C. Non-Binary"]:
+        loss_list = [
+            keras.losses.BinaryCrossentropy(),
+            keras.losses.BinaryCrossentropy(), 
+            keras.losses.CategoricalCrossentropy()
+        ]
+
+    model.compile(
+        optimizer = final_opt, 
+        loss = loss_list, 
+        metrics = ['accuracy']
+    )
+
+    model_2 = model.fit(
+        {
+            f"input_layer_{target_1}" : X_train,
+            f"input_layer_{target_2}" : X_train,
+            f"input_layer_{target_3}" : X_train
+        },
+        {
+            f"{target_1}_{layer_num}" : target_A, 
+            f"{target_2}_{layer_num}" : target_B, 
+            f"{target_3}_{layer_num}" : target_C, 
+        },
+        validation_data = (
+            {
+                f"input_layer_{target_1}" : X_test,
+                f"input_layer_{target_2}" : X_test,
+                f"input_layer_{target_3}" : X_test
+            },
+            {
+                f"{target_1}_{layer_num}" : target_A_test, 
+                f"{target_2}_{layer_num}" : target_B_test, 
+                f"{target_3}_{layer_num}" : target_C_test 
+            }
+        ),
+        epochs = epochs, 
+        batch_size = batch_size, 
+        verbose = 1, 
+        callbacks = [
+            early_stopping, 
+            early_stopping, 
+            early_stopping
+        ]
+    )
+
+    return model_2
+
+def get_predictions(X_data, y_data, target_1, target_2, target_3, model):
+    y_data_2 = pd.get_dummies(y_data[target_3])
+    y_data_2.columns = [str(i) for i in y_data_2.columns]
+
+    predicted_df = pd.DataFrame(
+        model.predict([X_data, X_data, X_data])[2]
+    )
+
+    predicted_df.columns = y_data_2.columns
+
+    predicted_values = []
+    predicted_df_1 = predicted_df.T.reset_index()
+
+    predictions_list = list(predicted_df_1["index"])
+
+    for (a, b) in enumerate(predicted_df_1.columns):
+        if b == "index":
+            pass
+        elif b != "index":
+            new_values = list(predicted_df_1[b])
+            predicted_values.append(predictions_list[new_values.index(max(new_values))])
+            print(f"Column {a + 1} processed, remaining columns: {len(predicted_df_1.columns) - {a + 1}}")
+
+    y_data[f"Predicted_{target_3}"] = predicted_values
+    y_data[f"Predicted_{target_3}"] = y_data[f"Predicted_{target_3}"].astype(float)
+
+    y_data[f"{target_1}_Prob"] = model.predict([X_data, X_data, X_data])[0]
+    y_data[f"{target_2}_Prob"] = model.predict([X_data, X_data, X_data])[1]
+
+    y_data.loc[y_data[f"{target_1}_Prob"] >= 0.5, f"Predicted_{target_1}"] = 1    
+    y_data.loc[y_data[f"{target_1}_Prob"] < 0.5, f"Predicted_{target_1}"] = 0
+
+    y_data.loc[y_data[f"{target_2}_Prob"] >= 0.5, f"Predicted_{target_2}"] = 1    
+    y_data.loc[y_data[f"{target_2}_Prob"] < 0.5, f"Predicted_{target_2}"] = 0
+
+    for i in [target_1, target_2, target_3]:
+        if i != target_3:
+            y_data.loc[y_data[i] == y_data[f"Predicted_{i}"], f"{i}_Accuracy"] = 1
+            y_data.loc[y_data[i] != y_data[f"Predicted_{i}"], f"{i}_Accuracy"] = 0
+        elif i == target_3:
+            y_data.loc[y_data[i].astype(str) == y_data[f"Predicted_{i}"].astype(str), f"{i}_Accuracy"] = 1    
+            y_data.loc[y_data[i].astype(str) != y_data[f"Predicted_{i}"].astype(str), f"{i}_Accuracy"] = 0
+        
+    for i in [target_1, target_2]:
+        y_data[f"{i}_Score"] = 500 + y_data[f"{i}_Prob"] * 40
+        y_data[f"{i}_Boundary"] = pd.qcut(y_data[f"{i}_Score"], 10)
+
+    return y_data
+
+def get_accuracy(y_data, target_1, target_2, target_3):
+
+    t1_accuracy = accuracy_score(y_data[target_1], y_data[f"Predicted_{target_1}"])
+    t2_accuracy = accuracy_score(y_data[target_2], y_data[f"Predicted_{target_2}"])
+    t3_accuracy = y_data[f"{target_3}_Accuracy"].sum() / len(y_data)
+
+    print(
+        f"""
+        {target_1} Accuracy: {t1_accuracy * 100:.2f}%
+        {target_2} Accuracy: {t2_accuracy * 100:.2f}%
+        {target_3} Accuracy: {t3_accuracy * 100:.2f}%
+        """    
+    )
+
+    y_data["Countcol"] = 1
+
+    t1_classification_report = pd.DataFrame(
+        classification_report(
+            y_data[f"{target_1}"],
+            y_data[f"Predicted_{target_1}"], 
+            output_dict = True
+        )
+    ).T
+
+    t2_classification_report = pd.DataFrame(
+        classification_report(
+            y_data[f"{target_2}"],
+            y_data[f"Predicted_{target_2}"], 
+            output_dict = True
+        )
+    ).T
+
+    t3_classification_report = pd.DataFrame(
+        classification_report(
+            y_data[f"{target_3}"],
+            y_data[f"Predicted_{target_3}"], 
+            output_dict = True
+        )
+    ).T
+
+    result_list = [t1_classification_report, t2_classification_report, t3_classification_report, y_data]
+    result_names = [f"{target_1}_report", f"{target_2}_report", f"{target_3}_report", "y_data"]
+    result_dict = dict(zip(result_names, result_list))
+
+    print(
+        f"""
+        Evaluation Complete, please use the following commands to access evaluation results:
+        1. var_name['{target_1}']
+        2. var_name['{target_2}']
+        3. var_name['{target_3}']
+        4. var_name['y_data']
+        """
+    )
+
+    return result_dict
+
+def summary_table(y_data, target, order = False):
+    t1_result = y_data[[f"{target}_Boundary", "Countcol", target]].groupby(f"{target}_Boundary", as_index = False).sum()
+    t1_result.columns = [f"{target} 등급 구간", "총 건수", "Target 건수"]
+    t1_result["Non-Target 거수"] = t1_result["총 건수"] - t1_result["Target 건수"]
+    t1_result["건수 비율"] = round(t1_result['총 건수'] / t1_result["총 건수"].sum() * 100, 2)
+    t1_result["총 Target 건수 대비 Target 비율"] = round(t1_result["Target 건수"] / t1_result["Target 건수"].sum() * 100, 2)
+    t1_result["총 Non-Target 건수 대비 Non-Target 비율"] = round(t1_result["Non-Target 건수"] / t1_result["Non-Target 건수"].sum() * 100, 2)
+    t1_result["등급별 Target 비율"] = round(t1_result["Target 건수"] / t1_result["총 건수"] * 100, 2)
+    t1_result["누적 총 Target 건수 대비 Target 비율"] = t1_result["총 Target 건수 대비 Target 비율"].cumsum()
+    t1_result["누적 총 Non-Target 건수 대비 Non-Target 비율"] = t1_result["총 Non-Target 건수 대비 Non-Target 비율"].cumsum()
+    t1_result[f"{target} 등급 구간"] = t1_result[f"{target} 등급 구간"].astype(str)
+    t1_result = t1_result.sort_values(by = f"{target} 등급 구간", ascending = False)
+
+    if order == False:
+        t1_score_dict = dict(zip(sorted(list(range(1, 11)), reverse = True), list(t1_result[f"{target} 등급 구간"].astype(str))))
+        t1_result[f"{target} 등급"] = [i for i in t1_score_dict]
+        y_data[f"{target} Level"] = y_data[f"{target}_Boundary"]
+
+        for i in t1_score_dict:
+            y_data[f"{target} Level"] = y_data[f"{target} Level"].astype(str).replace(t1_score_dict[i], i)
+
+    elif order == True:
+        t1_score_dict = dict(zip(sorted(list(range(1, 11))), list(t1_result[f"{target} 등급 구간"].astype(str))))
+        t1_result[f"{target} 등급"] = [i for i in t1_score_dict]
+        y_data[f"{target} Level"] = y_data[f"{target}_Boundary"]
+
+        for i in t1_score_dict:
+            y_data[f"{target} Level"] = y_data[f"{target} Level"].astype(str).replace(t1_score_dict[i], i)
+
+    results_dict = dict(zip(["Summary_Table", "y_data"], [t1_result, y_data]))
+
+    print(
+        f"""
+        Summary Table for {target} completed, use the following commands to access results:
+        1. var_name["Summary_Table"]
+        2. var_name["y_data"]
+        """
+    )
+
+    return results_dict
+
+def pivot_table_creator(y_data, var_1, var_2, value, function = 'sum'):
+    y_data[var_1] = y_data[var_1].astype(str).str.zfill(2)
+    y_data[var_2] = y_data[var_2].astype(str).str.zfill(2)
+
+    df_1 = y_data.pivot_table(
+        index = var_1,
+        columns = var_2, 
+        values = value, 
+        aggfunc = function, 
+        margins = True, 
+        fill_value = "."
+    )
+
+    return df_1
